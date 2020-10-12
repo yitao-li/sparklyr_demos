@@ -20,6 +20,8 @@ print(datasets$test)
 pipeline <- ml_pipeline(sc) %>%
   ft_tokenizer(input_col = "Line", output_col = "words") %>%
   ft_hashing_tf(input_col = "words", output_col = "features", num_features = 2L^15) %>%
+  # only consider lines consisting of more than 5 words
+  ft_sql_transformer("SELECT * FROM `__THIS__` WHERE SIZE(`words`) > 5") %>%
   # Assign each character name a unique index number
   ft_string_indexer(input_col = "Character", output_col = "CharacterIndex", handle_invalid = "keep") %>%
   # And then use that index number as the label for prediction

@@ -7,9 +7,16 @@ sdf <- spark_read_csv(sc, path = "./Shakespeare_data.csv")
 sdf %>% print(n = 10L)
 
 lines_sdf <- sdf %>%
-  dplyr::filter(Play == "Romeo and Juliet") %>%
+  dplyr::filter(Play == "Hamlet") %>%
   dplyr::rename(Character = Player, Line = PlayerLine) %>%
-  dplyr::filter(!is.na(Character))
+  dplyr::filter(!is.na(Character)) %>%
+  dplyr::mutate(ActScene = substring_index(ActSceneLine, '.', 2)) %>%
+  dplyr::group_by(PlayerLinenumber, ActScene) %>%
+  dplyr::summarize(Character = first_value(Character), Line = aggregate(collect_list(Line), "", ~ concat_ws(' ', .x, .y)))
+
+transformed_sdf <- lines_sdf %>%
+  dplyr::mutate(Terms = array("")) %>%
+  dplyr::compute()
 
 print(lines_sdf %>% sdf_nrow())
 
@@ -18,14 +25,21 @@ print(datasets$train)
 print(datasets$test)
 
 pipeline <- ml_pipeline(sc) %>%
-  ft_tokenizer(input_col = "Line", output_col = "words") %>%
-  ft_hashing_tf(input_col = "words", output_col = "features", num_features = 2L^15) %>%
-  # only consider lines consisting of more than 5 words
-  ft_sql_transformer("SELECT * FROM `__THIS__` WHERE SIZE(`words`) > 5") %>%
+  # And then do some feature engineering
+  ft_tokenizer(input_col = "Line", output_col = "Terms") %>%
+  ft_dplyr_transformer(transformed_sdf %>% dplyr::mutate(num_terms = size(Terms))) %>%
+  ft_hashing_tf(input_col = "Terms", output_col = "term_freq", num_features = 2L^15) %>%
+  ft_stop_words_remover(input_col = "Terms", output_col = "interesting_terms", stop_words = ml_default_stop_words(sc, "english")) %>%
+  ft_hashing_tf(input_col = "interesting_terms", output_col = "interesting_term_freq", num_features = 2L^15) %>%
+  ft_ngram(input_col = "Terms", output_col = "bigrams", n = 2L) %>%
+  ft_hashing_tf(input_col = "bigrams", output_col = "bigram_freq", num_features = 2L^15) %>%
+  ft_ngram(input_col = "interesting_terms", output_col = "interesting_bigrams", n = 2L) %>%
+  ft_hashing_tf(input_col = "interesting_bigrams", output_col = "interesting_bigram_freq", num_features = 2L^15) %>%
+  ft_vector_assembler(input_cols = c("term_freq", "bigram_freq", "interesting_term_freq", "interesting_bigram_freq", "num_terms"), output_col = "features") %>%
   # Assign each character name a unique index number
   ft_string_indexer(input_col = "Character", output_col = "CharacterIndex", handle_invalid = "keep") %>%
-  # And then use that index number as the label for prediction
-  ml_random_forest_classifier(features_col = "features", label_col = "CharacterIndex", num_trees = 40L, max_depth = 5L)
+  # Now choose a ML model. Choose wisely.
+  ml_random_forest_classifier(features_col = "features", label_col = "CharacterIndex", num_trees = 100L, max_depth = 10L, prediction_col = "prediction")
   # ml_logistic_regression(features_col = "features", label_col = "CharacterIndex")
   # ml_decision_tree_classifier(features_col = "features", label_col = "CharacterIndex", max_depth = 8L, max_bins = 40L)
   # ml_naive_bayes(features_col = "features", label_col = "CharacterIndex")
@@ -35,5 +49,5 @@ predictions <- model %>% ml_transform(datasets$test) %>%
   dplyr::select(CharacterIndex, prediction, probability) %>%
   collect()
 
-print(sum(predictions$CharacterIndex == predictions$prediction))
-print(sum(predictions$CharacterIndex != predictions$prediction))
+print(sum(predictions$CharacterIndex == predictions$prediction)) # total number of correct predictions
+print(sum(predictions$CharacterIndex != predictions$prediction)) # total number of incorrect predictions

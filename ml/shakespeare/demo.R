@@ -1,5 +1,7 @@
 library(sparklyr)
 
+set.seed(31415926L)
+
 sc <- spark_connect(master = "local", version = "3.0.0")
 # source: https://www.kaggle.com/kingburrito666/shakespeare-plays
 sdf <- spark_read_csv(sc, path = "./Shakespeare_data.csv")
@@ -14,6 +16,9 @@ lines_sdf <- sdf %>%
   dplyr::group_by(PlayerLinenumber, ActScene) %>%
   dplyr::summarize(Character = first_value(Character), Line = aggregate(collect_list(Line), "", ~ concat_ws(' ', .x, .y)))
 
+# `transformed_sdf` is a placeholder for the subsequent `ft_dplyr_transformer()` to be aware of the newly created `Terms`
+# column -- Currently `ft_dplyr_transformer()` is not aware of any of the schema changes made by all of the previous
+# transformations, and this is probably something that can be improved in `sparklyr` in future.
 transformed_sdf <- lines_sdf %>%
   dplyr::mutate(Terms = array("")) %>%
   dplyr::compute()
@@ -28,6 +33,7 @@ pipeline <- ml_pipeline(sc) %>%
   # And then do some feature engineering
   ft_tokenizer(input_col = "Line", output_col = "Terms") %>%
   ft_dplyr_transformer(transformed_sdf %>% dplyr::mutate(num_terms = size(Terms))) %>%
+  # ^^ alternatively, one can also just use ft_sql_transformer for simple SQL queries
   ft_hashing_tf(input_col = "Terms", output_col = "term_freq", num_features = 2L^15) %>%
   ft_stop_words_remover(input_col = "Terms", output_col = "interesting_terms", stop_words = ml_default_stop_words(sc, "english")) %>%
   ft_hashing_tf(input_col = "interesting_terms", output_col = "interesting_term_freq", num_features = 2L^15) %>%
